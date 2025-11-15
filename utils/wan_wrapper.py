@@ -24,7 +24,7 @@ class WanTextEncoder(torch.nn.Module):
             device=torch.device('cpu')
         ).eval().requires_grad_(False)
         self.text_encoder.load_state_dict(
-            torch.load("wan_models/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
+            torch.load("/home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a/models_t5_umt5-xxl-enc-bf16.pth",
                        map_location='cpu', weights_only=False)
         )
         
@@ -33,7 +33,7 @@ class WanTextEncoder(torch.nn.Module):
             self.text_encoder = self.text_encoder.cuda()
 
         self.tokenizer = HuggingfaceTokenizer(
-            name="wan_models/Wan2.1-T2V-1.3B/google/umt5-xxl/", seq_len=512, clean='whitespace')
+            name="/home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a/google/umt5-xxl/", seq_len=512, clean='whitespace')
 
     @property
     def device(self):
@@ -73,7 +73,7 @@ class WanVAEWrapper(torch.nn.Module):
 
         # init model
         self.model = _video_vae(
-            pretrained_path="wan_models/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth",
+            pretrained_path="/home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a/Wan2.1_VAE.pth",
             z_dim=16,
         ).eval().requires_grad_(False)
 
@@ -124,15 +124,23 @@ class WanDiffusionWrapper(torch.nn.Module):
             timestep_shift=8.0,
             is_causal=False,
             local_attn_size=-1,
-            sink_size=0
+            sink_size=0,
+            if_fsdp2=False
     ):
         super().__init__()
-
-        if is_causal:
-            self.model = CausalWanModel.from_pretrained(
-                f"wan_models/{model_name}/", local_attn_size=local_attn_size, sink_size=sink_size)
+        if if_fsdp2:
+            with torch.device("meta"):
+                if is_causal:
+                    self.model = CausalWanModel.from_pretrained(
+                        model_name, local_attn_size=local_attn_size, sink_size=sink_size)
+                else:
+                    self.model = WanModel.from_pretrained(model_name)
         else:
-            self.model = WanModel.from_pretrained(f"wan_models/{model_name}/")
+            if is_causal:
+                self.model = CausalWanModel.from_pretrained(
+                    model_name, local_attn_size=local_attn_size, sink_size=sink_size)
+            else:
+                self.model = WanModel.from_pretrained(model_name)
         self.model.eval()
 
         # For non-causal diffusion, all frames share the same timestep

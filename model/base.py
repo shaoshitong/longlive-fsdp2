@@ -30,13 +30,13 @@ class BaseModel(nn.Module):
         self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
         self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
         self.local_attn_size = getattr(args, "model_kwargs", {}).get("local_attn_size", -1)
-        self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
+        self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True, if_fsdp2=True)
         self.generator.model.requires_grad_(True)
 
-        self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
+        self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False, if_fsdp2=True)
         self.real_score.model.requires_grad_(False)
 
-        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False)
+        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False, if_fsdp2=True)
         self.fake_score.model.requires_grad_(True)
 
         self.text_encoder = WanTextEncoder()

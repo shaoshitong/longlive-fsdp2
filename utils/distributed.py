@@ -20,6 +20,28 @@ def fsdp_state_dict(model):
     return checkpoint
 
 
+def fsdp2_warp_wan(module, mixed_precision=False):
+    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+    from wan.modules.causal_model import CausalWanModel
+    from wan.modules.model import WanModel
+    assert isinstance(module, WanModel) or isinstance(module, CausalWanModel), "module must be a WanModel or CausalWanModel"
+    fsdp_kwargs = {}
+    if mixed_precision:
+        fsdp_kwargs["mp_policy"] = MixedPrecisionPolicy(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+        )
+    for block in module.blocks:
+        fully_shard(block, **fsdp_kwargs)
+    fully_shard(module, **fsdp_kwargs)
+    target_device = torch.device(
+            f"cuda:{torch.distributed.get_rank()}" if torch.distributed.is_initialized() else "cuda"
+        )
+    module.to_empty(device=target_device)
+    return module
+
+
+
 def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_strategy="size", min_num_params=int(5e7), transformer_module=None, cpu_offload=False):
     if mixed_precision:
         mixed_precision_policy = MixedPrecision(

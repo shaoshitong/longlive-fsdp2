@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from utils.dataset import TextDataset, TwoTextDataset, cycle
-from utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distributed_job, fsdp2_warp_wan
+from utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distributed_job
 from utils.misc import (
     set_seed,
     merge_dict_list
@@ -36,13 +36,8 @@ from pipeline import (
     CausalInferencePipeline,
     SwitchCausalInferencePipeline
 )
-from utils.fsdp2 import load_fsdp2_state_dict
-from utils.lora import replace_linear_with_lora, lora_false, lora_true, weak_lora, ori_lora, LoRALayer
-from utils.fsdp2_ema import create_ema_model
-from utils.fsdp2_checkpoint import FSDP2CheckpointManager
 from utils.debug_option import DEBUG, LOG_GPU_MEMORY, DEBUG_GRADIENT
 import time
-import torch.nn.init as init
 
 class Trainer:
     
@@ -87,73 +82,22 @@ class Trainer:
             )
 
         self.output_path = config.logdir
+        print(f"output_path: {self.output_path}")
         app_start_time = time.time_ns() / 1_000_000 
         
 
-        if config.distribution_loss == "dmd":
+        if config.distribution_loss == "causvid":
+            self.model = CausVid(config, device=self.device)
+        elif config.distribution_loss == "dmd":
             self.model = DMD(config, device=self.device)
         elif config.distribution_loss == "dmd_switch":
             self.model = DMDSwitch(config, device=self.device)
+        elif config.distribution_loss == "dmd_window":
+            self.model = DMDWindow(config, device=self.device)
+        elif config.distribution_loss == "sid":
+            self.model = SiD(config, device=self.device)
         else:
             raise ValueError("Invalid distribution matching loss")
-
-        self.is_lora_enabled = False
-        self.lora_config = None
-        if hasattr(config, 'adapter') and config.adapter is not None:
-            if self.is_main_process:
-                print("Applying LoRA to models...")
-            replace_linear_with_lora(self.model.generator.model, rank=self.lora_config.get('rank', 16))
-            # Configure LoRA for fake_score if needed
-            if getattr(self.lora_config, 'apply_to_critic', True):
-                replace_linear_with_lora(self.model.fake_score.model, rank=self.lora_config.get('rank', 16))
-                if self.is_main_process:
-                    print("LoRA applied to both generator and critic")
-            else:
-                if self.is_main_process:
-                    print("LoRA applied to generator only")
-
-            for name, param in self.model.generator.model.named_parameters():
-                if ".A" in name or ".B" in name:
-                    param.requires_grad_(True)
-                else:
-                    param.requires_grad_(False)
-
-            for name, param in self.model.fake_score.model.named_parameters():
-                if ".A" in name or ".B" in name:
-                    param.requires_grad_(True)
-                else:
-                    param.requires_grad_(False)
-        else:
-
-            for name, param in self.model.generator.model.named_parameters():
-                param.requires_grad_(True)
-            for name, param in self.model.fake_score.model.named_parameters():
-                param.requires_grad_(True)
-
-        self.model.generator.model = fsdp2_warp_wan(
-            self.model.generator.model,
-            mixed_precision=config.mixed_precision,
-        )
-
-        self.model.real_score.model = fsdp2_warp_wan(
-            self.model.real_score.model,
-            mixed_precision=config.mixed_precision,
-        )
-
-        self.model.fake_score.model = fsdp2_warp_wan(
-            self.model.fake_score.model,
-            mixed_precision=config.mixed_precision,
-        )
-
-        self.model.text_encoder = fsdp_wrap(
-            self.model.text_encoder,
-            sharding_strategy=config.sharding_strategy,
-            mixed_precision=config.mixed_precision,
-            wrap_strategy=config.text_encoder_fsdp_wrap_strategy,
-            cpu_offload=getattr(config, "text_encoder_cpu_offload", False)
-        )
-        self.model.vae = self.model.vae.to(
-            device=self.device, dtype=torch.bfloat16 if config.mixed_precision else torch.float32)
 
         # Save pretrained model state_dicts to CPU
         self.fake_score_state_dict_cpu = self.model.fake_score.state_dict()
@@ -162,7 +106,8 @@ class Trainer:
         auto_resume = getattr(config, "auto_resume", True)  # Default to True
 
         # ================================= LoRA Configuration =================================
-
+        self.is_lora_enabled = False
+        self.lora_config = None
         if hasattr(config, 'adapter') and config.adapter is not None:
             self.is_lora_enabled = True
             self.lora_config = config.adapter
@@ -182,27 +127,13 @@ class Trainer:
                 if "generator" in base_checkpoint:
                     if self.is_main_process:
                         print(f"Loading pretrained generator from {base_checkpoint_path}")
-                    missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                            model=self.model.generator,
-                            state_dict=base_checkpoint["generator"],
-                            strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                            broadcast_from_rank0=True
-                        )
-                    print(f"missing_keys: {missing_keys}")
-                    print(f"unexpected_keys: {unexpected_keys}")
+                    result = self.model.generator.load_state_dict(base_checkpoint["generator"], strict=True)
                     if self.is_main_process:
                         print("Generator weights loaded successfully")
                 elif "model" in base_checkpoint:
                     if self.is_main_process:
                         print(f"Loading pretrained generator from {base_checkpoint_path}")
-                    missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                            model=self.model.generator,
-                            state_dict=base_checkpoint["model"],
-                            strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                            broadcast_from_rank0=True
-                        )
-                    print(f"missing_keys: {missing_keys}")
-                    print(f"unexpected_keys: {unexpected_keys}")
+                    result = self.model.generator.load_state_dict(base_checkpoint["model"], strict=True)
                     if self.is_main_process:
                         print("Generator weights loaded successfully")
                 else:
@@ -213,14 +144,7 @@ class Trainer:
                 if "critic" in base_checkpoint:
                     if self.is_main_process:
                         print(f"Loading pretrained critic from {base_checkpoint_path}")
-                    missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                            model=self.model.fake_score,
-                            state_dict=base_checkpoint["critic"],
-                            strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                            broadcast_from_rank0=True
-                        )
-                    print(f"missing_keys: {missing_keys}")
-                    print(f"unexpected_keys: {unexpected_keys}")
+                    result = self.model.fake_score.load_state_dict(base_checkpoint["critic"], strict=True)
                     if self.is_main_process:
                         print("Critic weights loaded successfully")
                 else:
@@ -239,66 +163,135 @@ class Trainer:
                 if self.is_main_process:
                     print("Warning: Step not found in checkpoint, starting from step 0.")
             
-            self._initialize_lora_params()
-
-        if not self.is_lora_enabled:
-
-            if getattr(config, "generator_ckpt", False):
-                # Explicit checkpoint path provided
-                checkpoint_path = config.generator_ckpt
+            # 2. Apply LoRA wrapping now (after loading base model, before FSDP wrapping)
+            if self.is_main_process:
+                print("Applying LoRA to models...")
+            self.model.generator.model = self._configure_lora_for_model(self.model.generator.model, "generator")
+            
+            # Configure LoRA for fake_score if needed
+            if getattr(self.lora_config, 'apply_to_critic', True):
+                self.model.fake_score.model = self._configure_lora_for_model(self.model.fake_score.model, "fake_score")
                 if self.is_main_process:
-                    print(f"Using explicit checkpoint: {checkpoint_path}")
-
-            if checkpoint_path:
+                    print("LoRA applied to both generator and critic")
+            else:
                 if self.is_main_process:
-                    print(f"Loading checkpoint from {checkpoint_path}")
-                checkpoint = torch.load(checkpoint_path, map_location="cpu")
-                
-                # Load generator
-                if "generator" in checkpoint:
-                    if self.is_main_process:
-                        print(f"Loading pretrained generator from {checkpoint_path}")
-                    missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                            model=self.model.generator,
-                            state_dict=checkpoint["generator"],
-                            strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                            broadcast_from_rank0=True
-                        )
-                    print(f"missing_keys: {missing_keys}")
-                    print(f"unexpected_keys: {unexpected_keys}")
-                elif "model" in checkpoint:
-                    if self.is_main_process:
-                        print(f"Loading pretrained generator from {checkpoint_path}")
-                    missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                            model=self.model.generator,
-                            state_dict=checkpoint["model"],
-                            strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                            broadcast_from_rank0=True
-                        )
-                    print(f"missing_keys: {missing_keys}")
-                    print(f"unexpected_keys: {unexpected_keys}")
+                    print("LoRA applied to generator only")
+            
+            # 3. Load LoRA weights before FSDP wrapping (if a checkpoint is available)
+            lora_checkpoint_path = None
+            if auto_resume and self.output_path:
+                # Find the latest checkpoint and verify it is a LoRA checkpoint
+                latest_checkpoint = self.find_latest_checkpoint(self.output_path)
+                if latest_checkpoint:
+                    try:
+                        checkpoint = torch.load(latest_checkpoint, map_location="cpu")
+                        if "generator_lora" in checkpoint and "critic_lora" in checkpoint:
+                            lora_checkpoint_path = latest_checkpoint
+                            if self.is_main_process:
+                                print(f"Auto resume: Found LoRA checkpoint at {lora_checkpoint_path}")
+                        else:
+                            raise ValueError(f"Checkpoint {latest_checkpoint} is not a LoRA checkpoint. "
+                                           f"Found keys: {list(checkpoint.keys())}")
+                    except Exception as e:
+                        if self.is_main_process:
+                            print(f"Error validating checkpoint: {e}")
+                        raise e
                 else:
                     if self.is_main_process:
-                        print("Warning: Generator checkpoint not found.")
+                        print("Auto resume: No LoRA checkpoint found in logdir")
+            elif auto_resume:
+                if self.is_main_process:
+                    print("Auto resume enabled but no logdir specified for LoRA")
+            else:
+                if self.is_main_process:
+                    print("Auto resume disabled for LoRA")
+            
+            # If no auto-resumed LoRA checkpoint found, try config.lora_ckpt
+            if lora_checkpoint_path is None:
+                lora_ckpt_path = getattr(config, "lora_ckpt", None)
+                if lora_ckpt_path:
+                    try:
+                        checkpoint = torch.load(lora_ckpt_path, map_location="cpu")
+                        if "generator_lora" in checkpoint and "critic_lora" in checkpoint:
+                            lora_checkpoint_path = lora_ckpt_path
+                            if self.is_main_process:
+                                print(f"Using explicit LoRA checkpoint: {lora_checkpoint_path}")
+                        else:
+                            raise ValueError(f"Explicit LoRA checkpoint {lora_ckpt_path} is not a valid LoRA checkpoint. "
+                                           f"Found keys: {list(checkpoint.keys())}")
+                    except Exception as e:
+                        if self.is_main_process:
+                            print(f"Error loading explicit LoRA checkpoint: {e}")
+                        raise e
+                else:
+                    if self.is_main_process:
+                        print("No LoRA checkpoint specified, starting LoRA training from scratch")
+            
+            # Load LoRA checkpoint (before FSDP wrapping)
+            if lora_checkpoint_path:
+                if self.is_main_process:
+                    print(f"Loading LoRA checkpoint from {lora_checkpoint_path} (before FSDP wrapping)")
+                lora_checkpoint = torch.load(lora_checkpoint_path, map_location="cpu")
+                
+                # Load LoRA weights using PEFT's standard method
+                if "generator_lora" in lora_checkpoint:
+                    if self.is_main_process:
+                        print(f"Loading LoRA generator weights: {len(lora_checkpoint['generator_lora'])} keys in checkpoint")
+                    
+                    # Use PEFT's set_peft_model_state_dict; it automatically aligns key names
+                    peft.set_peft_model_state_dict(self.model.generator.model, lora_checkpoint["generator_lora"])
+                
+                if "critic_lora" in lora_checkpoint:
+                    if self.is_main_process:
+                        print(f"Loading LoRA critic weights: {len(lora_checkpoint['critic_lora'])} keys in checkpoint")
+                    
+                    # Use PEFT's set_peft_model_state_dict; it automatically aligns key names
+                    peft.set_peft_model_state_dict(self.model.fake_score.model, lora_checkpoint["critic_lora"])
 
-        real_state_dict = self._load_sharded_weights(self.config.real_name)
-        fake_state_dict = self._load_sharded_weights(self.config.fake_name)
-        missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                model=self.model.fake_score.model,
-                state_dict=fake_state_dict["model"] if "model" in fake_state_dict else fake_state_dict,
-                strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                broadcast_from_rank0=True
-            )
-        print(f"FAKE SCORE missing_keys: {missing_keys}")
-        print(f"FAKE SCORE unexpected_keys: {unexpected_keys}")  
-        missing_keys, unexpected_keys = load_fsdp2_state_dict(
-                model=self.model.real_score.model,
-                state_dict=real_state_dict["model"] if "model" in real_state_dict else real_state_dict,
-                strict=False,  # 允许部分匹配，因为可能有FSDP2相关的key差异
-                broadcast_from_rank0=True
-            )
-        print(f"REAL SCORE missing_keys: {missing_keys}")
-        print(f"REAL SCORE unexpected_keys: {unexpected_keys}")  
+                # Load training step
+                if "step" in lora_checkpoint:
+                    self.step = lora_checkpoint["step"]
+                    if self.is_main_process:
+                        print(f"Resuming LoRA training from step {self.step}")
+            else:
+                if self.is_main_process:
+                    print("No LoRA checkpoint to load, starting from scratch")
+
+        self.model.generator = fsdp_wrap(
+            self.model.generator,
+            sharding_strategy=config.sharding_strategy,
+            mixed_precision=config.mixed_precision,
+            wrap_strategy=config.generator_fsdp_wrap_strategy
+        )
+
+        self.model.real_score = fsdp_wrap(
+            self.model.real_score,
+            sharding_strategy=config.sharding_strategy,
+            mixed_precision=config.mixed_precision,
+            wrap_strategy=config.real_score_fsdp_wrap_strategy
+        )
+
+        self.model.fake_score = fsdp_wrap(
+            self.model.fake_score,
+            sharding_strategy=config.sharding_strategy,
+            mixed_precision=config.mixed_precision,
+            wrap_strategy=config.fake_score_fsdp_wrap_strategy
+        )
+
+        self.model.text_encoder = fsdp_wrap(
+            self.model.text_encoder,
+            sharding_strategy=config.sharding_strategy,
+            mixed_precision=config.mixed_precision,
+            wrap_strategy=config.text_encoder_fsdp_wrap_strategy,
+            cpu_offload=getattr(config, "text_encoder_cpu_offload", False)
+        )
+        self.model.vae = self.model.vae.to(
+            device=self.device, dtype=torch.bfloat16 if config.mixed_precision else torch.float32)
+
+        # if not config.no_visualize or config.load_raw_video:
+        #     print("Moving vae to device 2, self.device: ", self.device)
+        #     self.model.vae = self.model.vae.to(
+        #         device=self.device, dtype=torch.bfloat16 if config.mixed_precision else torch.float32)
 
         # Step 3: Set up EMA parameter containers
         rename_param = (
@@ -322,9 +315,9 @@ class Trainer:
                 self.generator_ema = None
             else:
                 print(f"Setting up EMA with weight {ema_weight}")
-                self.generator_ema = create_ema_model(self.model.generator, decay=ema_weight)
+                self.generator_ema = EMA_FSDP(self.model.generator, decay=ema_weight)
 
-        self._reinitialize_dit_freqs(torch.device("cuda"))
+        
 
         self.generator_optimizer = torch.optim.AdamW(
             [param for param in self.model.generator.parameters()
@@ -342,7 +335,9 @@ class Trainer:
             weight_decay=config.weight_decay
         )
 
-        if self.config.distribution_loss == "dmd_switch":
+        if self.config.i2v:
+            dataset = ShardingLMDBDataset(config.data_path, max_pair=int(1e8))
+        elif self.config.distribution_loss == "dmd_switch":
             dataset = TwoTextDataset(config.data_path, config.switch_prompt_path)
         else:
             dataset = TextDataset(config.data_path)
@@ -365,7 +360,9 @@ class Trainer:
             # Determine validation data path
             val_data_path = getattr(config, "val_data_path", None) or config.data_path
 
-            if self.config.distribution_loss == "dmd_switch":
+            if self.config.i2v:
+                val_dataset = ShardingLMDBDataset(val_data_path, max_pair=int(1e8))
+            elif self.config.distribution_loss == "dmd_switch":
                 val_dataset = TwoTextDataset(val_data_path, config.val_switch_prompt_path)
             else:
                 val_dataset = TextDataset(val_data_path)
@@ -397,6 +394,107 @@ class Trainer:
 
             if self.vis_interval > 0 and len(self.vis_video_lengths) > 0:
                 self._setup_visualizer()
+            
+        if not self.is_lora_enabled:
+            # ================================= Standard (non-LoRA) model logic =================================
+            checkpoint_path = None
+            
+            if auto_resume and self.output_path:
+                # Auto resume: find latest checkpoint in logdir
+                latest_checkpoint = self.find_latest_checkpoint(self.output_path)
+                if latest_checkpoint:
+                    checkpoint_path = latest_checkpoint
+                    if self.is_main_process:
+                        print(f"Auto resume: Found latest checkpoint at {checkpoint_path}")
+                else:
+                    if self.is_main_process:
+                        print("Auto resume: No checkpoint found in logdir, starting from scratch")
+            elif auto_resume:
+                if self.is_main_process:
+                    print("Auto resume enabled but no logdir specified, starting from scratch")
+            else:
+                if self.is_main_process:
+                    print("Auto resume disabled, starting from scratch")
+            
+            if checkpoint_path is None:
+                if getattr(config, "generator_ckpt", False):
+                    # Explicit checkpoint path provided
+                    checkpoint_path = config.generator_ckpt
+                    if self.is_main_process:
+                        print(f"Using explicit checkpoint: {checkpoint_path}")
+
+            if checkpoint_path:
+                if self.is_main_process:
+                    print(f"Loading checkpoint from {checkpoint_path}")
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                
+                # Load generator
+                if "generator" in checkpoint:
+                    if self.is_main_process:
+                        print(f"Loading pretrained generator from {checkpoint_path}")
+                    self.model.generator.load_state_dict(checkpoint["generator"], strict=True)
+                elif "model" in checkpoint:
+                    if self.is_main_process:
+                        print(f"Loading pretrained generator from {checkpoint_path}")
+                    self.model.generator.load_state_dict(checkpoint["model"], strict=True)
+                else:
+                    if self.is_main_process:
+                        print("Warning: Generator checkpoint not found.")
+                
+                # Load critic
+                if "critic" in checkpoint:
+                    if self.is_main_process:
+                        print(f"Loading pretrained critic from {checkpoint_path}")
+                    self.model.fake_score.load_state_dict(checkpoint["critic"], strict=True)
+                else:
+                    if self.is_main_process:
+                        print("Warning: Critic checkpoint not found.")
+                
+                # Load EMA
+                if "generator_ema" in checkpoint and self.generator_ema is not None:
+                    if self.is_main_process:
+                        print(f"Loading pretrained EMA from {checkpoint_path}")
+                    self.generator_ema.load_state_dict(checkpoint["generator_ema"])
+                else:
+                    if self.is_main_process:
+                        print("Warning: EMA checkpoint not found or EMA not initialized.")
+                
+                # For auto resume, always resume full training state
+                # Load optimizers
+                if "generator_optimizer" in checkpoint:
+                    if self.is_main_process:
+                        print("Resuming generator optimizer...")
+                    gen_osd = FSDP.optim_state_dict_to_load(
+                        self.model.generator,              # FSDP root module
+                        self.generator_optimizer,          # newly created optimizer
+                        checkpoint["generator_optimizer"]  # optimizer state dict at save time
+                    )
+                    self.generator_optimizer.load_state_dict(gen_osd)
+                else:
+                    if self.is_main_process:
+                        print("Warning: Generator optimizer checkpoint not found.")
+                
+                if "critic_optimizer" in checkpoint:
+                    if self.is_main_process:
+                        print("Resuming critic optimizer...")
+                    crit_osd = FSDP.optim_state_dict_to_load(
+                        self.model.fake_score,
+                        self.critic_optimizer,
+                        checkpoint["critic_optimizer"]
+                    )
+                    self.critic_optimizer.load_state_dict(crit_osd)
+                else:
+                    if self.is_main_process:
+                        print("Warning: Critic optimizer checkpoint not found.")
+                
+                # Load training step
+                if "step" in checkpoint:
+                    self.step = checkpoint["step"]
+                    if self.is_main_process:
+                        print(f"Resuming from step {self.step}")
+                else:
+                    if self.is_main_process:
+                        print("Warning: Step not found in checkpoint, starting from step 0.")
 
         ##############################################################################################################
 
@@ -435,16 +533,98 @@ class Trainer:
             if LOG_GPU_MEMORY:
                 log_gpu_memory("After initialization", device=self.device, rank=dist.get_rank())
 
-        checkpoint_dir = self.output_path
-        keep_last_n = self.config.get('keep_last_n', 5)
-        self.manager = FSDP2CheckpointManager(checkpoint_dir=checkpoint_dir,keep_last_n=keep_last_n)
-
+        
     def _move_optimizer_to_device(self, optimizer, device):
         """Move optimizer state to the specified device."""
         for state in optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(device)
+
+    def find_latest_checkpoint(self, logdir):
+        """Find the latest checkpoint in the logdir."""
+        if not os.path.exists(logdir):
+            return None
+        
+        checkpoint_dirs = []
+        for item in os.listdir(logdir):
+            if item.startswith("checkpoint_model_") and os.path.isdir(os.path.join(logdir, item)):
+                try:
+                    # Extract step number from directory name
+                    step_str = item.replace("checkpoint_model_", "")
+                    step = int(step_str)
+                    checkpoint_path = os.path.join(logdir, item, "model.pt")
+                    if os.path.exists(checkpoint_path):
+                        checkpoint_dirs.append((step, checkpoint_path))
+                except ValueError:
+                    continue
+        
+        if not checkpoint_dirs:
+            return None
+        
+        # Sort by step number and return the latest one
+        checkpoint_dirs.sort(key=lambda x: x[0])
+        latest_step, latest_path = checkpoint_dirs[-1]
+        return latest_path
+
+    def get_all_checkpoints(self, logdir):
+        """Get all checkpoints in the logdir sorted by step number."""
+        if not os.path.exists(logdir):
+            return []
+        
+        checkpoint_dirs = []
+        for item in os.listdir(logdir):
+            if item.startswith("checkpoint_model_") and os.path.isdir(os.path.join(logdir, item)):
+                try:
+                    # Extract step number from directory name
+                    step_str = item.replace("checkpoint_model_", "")
+                    step = int(step_str)
+                    checkpoint_dir_path = os.path.join(logdir, item)
+                    checkpoint_file_path = os.path.join(checkpoint_dir_path, "model.pt")
+                    if os.path.exists(checkpoint_file_path):
+                        checkpoint_dirs.append((step, checkpoint_dir_path, item))
+                except ValueError:
+                    continue
+        
+        # Sort by step number (ascending order)
+        checkpoint_dirs.sort(key=lambda x: x[0])
+        return checkpoint_dirs
+
+    def cleanup_old_checkpoints(self, logdir, max_checkpoints):
+        """Remove old checkpoints if the number exceeds max_checkpoints.
+        
+        Only the main process performs the actual deletion to avoid race conditions
+        in distributed training.
+        """
+        if max_checkpoints <= 0:
+            return
+        
+        # Only main process should perform cleanup to avoid race conditions
+        if not self.is_main_process:
+            return
+            
+        checkpoints = self.get_all_checkpoints(logdir)
+        if len(checkpoints) > max_checkpoints:
+            # Calculate how many to remove
+            num_to_remove = len(checkpoints) - max_checkpoints
+            checkpoints_to_remove = checkpoints[:num_to_remove]  # Remove oldest ones
+            
+            print(f"Checkpoint cleanup: Found {len(checkpoints)} checkpoints, removing {num_to_remove} oldest ones (keeping {max_checkpoints})")
+            
+            import shutil
+            removed_count = 0
+            for step, checkpoint_dir_path, dir_name in checkpoints_to_remove:
+                try:
+                    print(f"  Removing: {dir_name} (step {step})")
+                    shutil.rmtree(checkpoint_dir_path)
+                    removed_count += 1
+                except Exception as e:
+                    print(f"  Warning: Failed to remove checkpoint {dir_name}: {e}")
+            
+            print(f"Checkpoint cleanup completed: removed {removed_count}/{num_to_remove} old checkpoints")
+        else:
+            if len(checkpoints) > 0:
+                print(f"Checkpoint cleanup: Found {len(checkpoints)} checkpoints (max: {max_checkpoints}, no cleanup needed)")
 
     def _get_switch_frame_index(self, max_length=None):
         if getattr(self.config, "switch_mode", "fixed") == "random":
@@ -504,14 +684,63 @@ class Trainer:
                 self.model.generator.model)
             crit_lora_sd = self._gather_lora_state_dict(
                 self.model.fake_score.model)
+
             state_dict = {
                 "generator_lora": gen_lora_sd,
                 "critic_lora": crit_lora_sd,
                 "step": self.step,
             }
-            self.manager.save(state_dict=state_dict, step=self.step)
         else:
-            self.manager.save(self.model.generator, self.generator_optimizer, self.generator_ema, step=self.step)
+            with FSDP.state_dict_type(
+                self.model.generator,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
+                FullOptimStateDictConfig(rank0_only=True),          # newly added
+            ):
+                generator_state_dict  = self.model.generator.state_dict()
+                generator_opim_state_dict = FSDP.optim_state_dict(self.model.generator,
+                                                self.generator_optimizer)
+
+            with FSDP.state_dict_type(
+                self.model.fake_score,
+                StateDictType.FULL_STATE_DICT,
+                FullStateDictConfig(rank0_only=True, offload_to_cpu=True),
+                FullOptimStateDictConfig(rank0_only=True),          # newly added
+            ):
+                critic_state_dict  = self.model.fake_score.state_dict()
+                critic_opim_state_dict = FSDP.optim_state_dict(self.model.fake_score,
+                                                self.critic_optimizer)
+
+            if self.config.ema_start_step < self.step and self.generator_ema is not None:
+                state_dict = {
+                    "generator": generator_state_dict,
+                    "critic": critic_state_dict,
+                    "generator_ema": self.generator_ema.state_dict(),
+                    "generator_optimizer": generator_opim_state_dict,
+                    "critic_optimizer": critic_opim_state_dict,
+                    "step": self.step,
+                }
+            else:
+                state_dict = {
+                    "generator": generator_state_dict,
+                    "critic": critic_state_dict,
+                    "generator_optimizer": generator_opim_state_dict,
+                    "critic_optimizer": critic_opim_state_dict,
+                    "step": self.step,
+                }
+
+        if self.is_main_process:
+            checkpoint_dir = os.path.join(self.output_path, f"checkpoint_model_{self.step:06d}")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_file = os.path.join(checkpoint_dir, "model.pt")
+            torch.save(state_dict, checkpoint_file)
+            print("Model saved to", checkpoint_file)
+            
+            # Cleanup old checkpoints if max_checkpoints is set
+            max_checkpoints = getattr(self.config, "max_checkpoints", 0)
+            if max_checkpoints > 0:
+                self.cleanup_old_checkpoints(self.output_path, max_checkpoints)
+
         torch.cuda.empty_cache()
         import gc
         gc.collect()
@@ -919,7 +1148,7 @@ class Trainer:
                     
                     # Compute grad norm and update parameters
                     if TRAIN_GENERATOR:
-                        generator_grad_norm = torch.nn.utils.clip_grad_norm_(self.model.generator.parameters(), self.max_grad_norm_generator)
+                        generator_grad_norm = self.model.generator.clip_grad_norm_(self.max_grad_norm_generator)
                         generator_log_dict = merge_dict_list(accumulated_generator_logs)
                         generator_log_dict["generator_grad_norm"] = generator_grad_norm
                         
@@ -932,7 +1161,7 @@ class Trainer:
                     else:
                         generator_log_dict = {}
                     
-                    critic_grad_norm = torch.nn.utils.clip_grad_norm_(self.model.fake_score.parameters(), self.max_grad_norm_critic)
+                    critic_grad_norm = self.model.fake_score.clip_grad_norm_(self.max_grad_norm_critic)
                     critic_log_dict = merge_dict_list(accumulated_critic_logs)
                     critic_log_dict["critic_grad_norm"] = critic_grad_norm
                     
@@ -978,7 +1207,7 @@ class Trainer:
                     
                     # Compute grad norm and update parameters
                     if TRAIN_GENERATOR:
-                        generator_grad_norm = torch.nn.utils.clip_grad_norm_(self.model.generator.parameters(), self.max_grad_norm_generator)
+                        generator_grad_norm = self.model.generator.clip_grad_norm_(self.max_grad_norm_generator)
                         generator_log_dict = merge_dict_list(accumulated_generator_logs)
                         generator_log_dict["generator_grad_norm"] = generator_grad_norm
                         
@@ -988,7 +1217,7 @@ class Trainer:
                     else:
                         generator_log_dict = {}
                     
-                    critic_grad_norm = torch.nn.utils.clip_grad_norm_(self.model.fake_score.parameters(), self.max_grad_norm_critic)
+                    critic_grad_norm = self.model.fake_score.clip_grad_norm_(self.max_grad_norm_critic)
                     critic_log_dict = merge_dict_list(accumulated_critic_logs)
                     critic_log_dict["critic_grad_norm"] = critic_grad_norm
                     
@@ -1001,7 +1230,7 @@ class Trainer:
                 if (self.step >= self.config.ema_start_step) and \
                         (self.generator_ema is None) and (self.config.ema_weight > 0):
                     if not self.is_lora_enabled:
-                        self.generator_ema = create_ema_model(self.model.generator, decay=self.config.ema_weight)
+                        self.generator_ema = EMA_FSDP(self.model.generator, decay=self.config.ema_weight)
                         if self.is_main_process:
                             print(f"EMA created at step {self.step} with weight {self.config.ema_weight}")
                     else:
@@ -1077,16 +1306,65 @@ class Trainer:
             # Clean up resources
             pass
 
+    def _configure_lora_for_model(self, transformer, model_name):
+        """Configure LoRA for a WanDiffusionWrapper model"""
+        # Find all Linear modules in WanAttentionBlock modules
+        target_linear_modules = set()
+        
+        # Define the specific modules we want to apply LoRA to
+        if model_name == 'generator':
+            adapter_target_modules = ['CausalWanAttentionBlock']
+        elif model_name == 'fake_score':
+            adapter_target_modules = ['WanAttentionBlock']
+        else:
+            raise ValueError(f"Invalid model name: {model_name}")
+        
+        for name, module in transformer.named_modules():
+            if module.__class__.__name__ in adapter_target_modules:
+                for full_submodule_name, submodule in module.named_modules(prefix=name):
+                    if isinstance(submodule, torch.nn.Linear):
+                        target_linear_modules.add(full_submodule_name)
+        
+        target_linear_modules = list(target_linear_modules)
+        
+        if self.is_main_process:
+            print(f"LoRA target modules for {model_name}: {len(target_linear_modules)} Linear layers")
+            if getattr(self.lora_config, 'verbose', False):
+                for module_name in sorted(target_linear_modules):
+                    print(f"  - {module_name}")
+        
+        # Create LoRA config
+        adapter_type = self.lora_config.get('type', 'lora')
+        if adapter_type == 'lora':
+            peft_config = peft.LoraConfig(
+                r=self.lora_config.get('rank', 16),
+                lora_alpha=self.lora_config.get('alpha', None) or self.lora_config.get('rank', 16),
+                lora_dropout=self.lora_config.get('dropout', 0.0),
+                target_modules=target_linear_modules,
+                # task_type="FEATURE_EXTRACTION"        # Remove this; not needed for diffusion models
+            )
+        else:
+            raise NotImplementedError(f'Adapter type {adapter_type} is not implemented')
+        
+        # Apply LoRA to the transformer
+        lora_model = peft.get_peft_model(transformer, peft_config)
+
+        if self.is_main_process:
+            print('peft_config', peft_config)
+            lora_model.print_trainable_parameters()
+
+        return lora_model
+
 
     def _gather_lora_state_dict(self, lora_model):
         "On rank-0, gather FULL_STATE_DICT, then filter only LoRA weights"
-        from torch.distributed.checkpoint.state_dict import get_model_state_dict
-        state_dict = get_model_state_dict(lora_model)
-        new_lora_state_dict = {}
-        for key, value in state_dict.items():
-            if ".A" in key or ".B" in key:
-                new_lora_state_dict[key] = value
-        return new_lora_state_dict
+        with FSDP.state_dict_type(
+            lora_model,                       # lora_model contains nested FSDP submodules
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(rank0_only=True, offload_to_cpu=True)
+        ):
+            full = lora_model.state_dict()
+        return get_peft_model_state_dict(lora_model, state_dict=full)
     
     # --------------------------------------------------------------------------------------------------------------
     # Visualization helpers
@@ -1174,159 +1452,3 @@ class Trainer:
         torch.cuda.empty_cache()
         import gc
         gc.collect()
-
-    def _reinitialize_dit_freqs(self, target_device: torch.device):
-        """重新初始化DiT模型的freqs tensor到指定设备"""
-        # 获取DiT模型的配置
-        dim = self.model.generator.model.dim
-        num_heads = self.model.generator.model.num_heads
-        d = dim // num_heads
-        
-        # 导入rope参数函数
-        from wan.modules.model import rope_params
-        freqs = torch.cat([
-            rope_params(1024, d - 4 * (d // 6)),
-            rope_params(1024, 2 * (d // 6)),
-            rope_params(1024, 2 * (d // 6))
-        ], dim=1)
-    
-        # 移动到目标设备并注册为buffer
-        freqs = freqs.to(device=target_device)
-        
-        # 确保freqs被正确注册为buffer而不是参数
-        if hasattr(self.model.generator.model, 'freqs'):
-            delattr(self.model.generator.model, 'freqs')
-        if hasattr(self.model.fake_score.model, 'freqs'):
-            delattr(self.model.fake_score.model, 'freqs')
-        if hasattr(self.model.real_score.model, 'freqs'):
-            delattr(self.model.real_score.model, 'freqs')
-        self.model.generator.model.register_buffer('freqs', freqs, persistent=False)
-        self.model.fake_score.model.register_buffer('freqs', freqs, persistent=False)
-        self.model.real_score.model.register_buffer('freqs', freqs, persistent=False)
-
-
-    def _initialize_lora_params(self):
-        """手动初始化 LoRA 参数（在 to_empty 后）"""
-        print("Initializing LoRA parameters after to_empty...")
-        for name, module in self.model.generator.model.named_modules():
-            if isinstance(module, LoRALayer):
-                init.normal_(module.A, mean=0.0, std=0.2)
-                init.zeros_(module.B)
-
-        for name, module in self.model.fake_score.model.named_modules():
-            if isinstance(module, LoRALayer):
-                init.normal_(module.A, mean=0.0, std=0.2)
-                init.zeros_(module.B)
-
-    def _load_sharded_weights(self, model_path):
-        """
-        加载分片权重文件（支持HuggingFace格式）
-        
-        Returns:
-            dict: 合并后的状态字典，如果失败则返回None
-        """
-        import re
-        from safetensors.torch import load_file
-        import glob
-        # 查找所有相关文件
-        bin_files = glob.glob(os.path.join(model_path, "*.bin"))
-        pth_files = glob.glob(os.path.join(model_path, "*.pth"))
-        safetensor_files = glob.glob(os.path.join(model_path, "*.safetensors"))
-        
-        all_files = bin_files + pth_files + safetensor_files
-        exclude_keywords = ['vae', 't5', 'encoder', 'tokenizer']
-        
-        # 过滤掉不相关的文件
-        model_files = []
-        for f in all_files:
-            basename = os.path.basename(f).lower()
-            if not any(keyword in basename for keyword in exclude_keywords):
-                model_files.append(f)
-        
-        if not model_files:
-            print("[WARNING] No model files found")
-            return None
-        
-        # 检测是否为分片文件（HuggingFace格式: diffusion_pytorch_model-00001-of-00006.safetensors）
-        sharded_files = []
-        pattern = r'(.+)-(\d+)-of-(\d+)\.(safetensors|bin|pth)$'
-        
-        for f in model_files:
-            basename = os.path.basename(f)
-            match = re.search(pattern, basename)
-            if match:
-                prefix, shard_idx, total_shards, ext = match.groups()
-                sharded_files.append((f, int(shard_idx), int(total_shards), prefix, ext))
-        
-        if sharded_files:
-            # 处理分片文件
-            print(f"[INFO] Found {len(sharded_files)} sharded model files")
-            
-            # 按分片索引排序
-            sharded_files.sort(key=lambda x: x[1])
-            
-            # 验证分片完整性
-            total_shards = sharded_files[0][2]
-            prefix = sharded_files[0][3]
-            ext = sharded_files[0][4]
-            
-            if len(sharded_files) != total_shards:
-                print(f"[WARNING] Expected {total_shards} shards, but found {len(sharded_files)}")
-            
-            # 加载所有分片并合并
-            merged_state_dict = {}
-            print(f"[INFO] Loading {len(sharded_files)} shards...")
-            
-            for file_path, shard_idx, _, _, file_ext in sharded_files:
-                print(f"[INFO] Loading shard {shard_idx}/{total_shards}: {os.path.basename(file_path)}")
-                
-                try:
-                    if file_ext == 'safetensors':
-                        shard_dict = load_file(file_path)
-                    else:
-                        shard_dict = torch.load(file_path, map_location='cpu')
-                    
-                    # 合并到总的状态字典中
-                    for key, value in shard_dict.items():
-                        if key in merged_state_dict:
-                            print(f"[WARNING] Duplicate key found: {key}")
-                        merged_state_dict[key] = value
-                    
-                    print(f"[INFO] Shard {shard_idx} loaded: {len(shard_dict)} keys")
-                    
-                except Exception as e:
-                    print(f"[ERROR] Failed to load shard {shard_idx}: {e}")
-                    return None
-            
-            print(f"[INFO] Successfully merged {len(sharded_files)} shards into {len(merged_state_dict)} total keys")
-            return merged_state_dict
-            
-        else:
-            # 没有分片文件，尝试加载单个文件
-            for f in model_files:
-                basename = os.path.basename(f).lower()
-                if 'model' in basename:
-                    print(f"[INFO] Found single model file: {os.path.basename(f)}")
-                    
-                    try:
-                        if f.endswith('.safetensors'):
-                            return load_file(f)
-                        else:
-                            return torch.load(f, map_location='cpu')
-                    except Exception as e:
-                        print(f"[ERROR] Failed to load {f}: {e}")
-                        continue
-            
-            # 如果都没找到合适的，使用第一个文件
-            if model_files:
-                f = model_files[0]
-                print(f"[INFO] Using fallback file: {os.path.basename(f)}")
-                try:
-                    if f.endswith('.safetensors'):
-                        return load_file(f)
-                    else:
-                        return torch.load(f, map_location='cpu')
-                except Exception as e:
-                    print(f"[ERROR] Failed to load {f}: {e}")
-            
-            return None
