@@ -52,9 +52,7 @@ class FSDP2EMAModel:
             use_fsdp2: 是否使用FSDP2兼容模式
         """
         self.decay = decay
-        self.device = device if device is not None else torch.device(
-            f"cuda:{torch.distributed.get_rank()}" if torch.distributed.is_initialized() else "cuda"
-        )
+        self.device = device
         self.update_after_step = update_after_step
         self.step_count = 0
         self.use_fsdp2 = use_fsdp2 and HAS_FSDP2

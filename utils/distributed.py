@@ -6,7 +6,8 @@ import torch.distributed as dist
 from torch.distributed.fsdp import FullStateDictConfig, FullyShardedDataParallel as FSDP, MixedPrecision, ShardingStrategy, StateDictType
 from torch.distributed.fsdp.api import CPUOffload
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer_auto_wrap_policy
-
+from torch.distributed.device_mesh import init_device_mesh  # new import
+from torch.distributed.fsdp import CPUOffloadPolicy
 
 def fsdp_state_dict(model):
     fsdp_fullstate_save_policy = FullStateDictConfig(
@@ -38,6 +39,27 @@ def fsdp2_warp_wan(module, mixed_precision=False):
             f"cuda:{torch.distributed.get_rank()}" if torch.distributed.is_initialized() else "cuda"
         )
     module.to_empty(device=target_device)
+    return module
+
+def fsdp2_warp_ovi(module, mixed_precision=False):
+    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+    from ovi.modules.fusion_casual import CausalFusionModel
+    from ovi.modules.fusion import FusionModel
+    assert isinstance(module, FusionModel) or isinstance(module, CausalFusionModel), "module must be a FusionModel or FusionCausalModel"
+    fsdp_kwargs = {}
+    if mixed_precision:
+        fsdp_kwargs["mp_policy"] = MixedPrecisionPolicy(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+        )
+    fsdp_kwargs["offload_policy"] = CPUOffloadPolicy(pin_memory=True)
+    for block in module.single_fusion_blocks:
+        fully_shard(block, **fsdp_kwargs)
+    fully_shard(module, **fsdp_kwargs)
+    target_device = torch.device(
+            f"cuda:{torch.distributed.get_rank()}" if torch.distributed.is_initialized() else "cuda"
+        )
+    module.to_empty(device="cpu")
     return module
 
 

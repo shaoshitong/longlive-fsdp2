@@ -1,10 +1,9 @@
-generator_ckpt: checkpoints/ode_init.pt
+generator_ckpt: /share/st_workspace/pretrained_weights/CausVid/wan_causal_ode_checkpoint_model_003000/wanx_1p3B_ode_init.pth
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size
 fake_score_fsdp_wrap_strategy: size
-real_name: Wan2.1-T2V-1.3B
-# real_name: Wan2.1-T2V-14B
-fake_name: Wan2.1-T2V-1.3B
+real_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
+fake_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
 text_encoder_fsdp_wrap_strategy: size
 denoising_step_list:
 - 1000
@@ -19,9 +18,9 @@ guidance_scale: 3.0
 denoising_loss_type: flow
 mixed_precision: true
 seed: 0
-wandb_key: YOUR_WANDB_KEY
-wandb_entity: YOUR_WANDB_ENTITY
-wandb_project: YOUR_WANDB_PROJECT
+wandb_key: eedb247029757d557d7fc466e3d339d428ba411a
+wandb_entity: shaoshitong
+wandb_project: long-video-v1
 sharding_strategy: hybrid_full
 lr: 2.0e-06
 lr_critic: 4.0e-07
@@ -31,11 +30,11 @@ beta1_critic: 0.0
 beta2_critic: 0.999
 data_path: prompts/vidprom_filtered_extended.txt
 batch_size: 1
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 4
 ema_weight: 0.99
 ema_start_step: 200
 total_batch_size: 64
-log_iters: 100
+log_iters: 10
 max_checkpoints: 5
 max_iters: 700
 
@@ -56,6 +55,7 @@ model_kwargs:
   timestep_shift: 5.0
   local_attn_size: 12
   sink_size: 3
+  model_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
 
 # Visualization
 vis_interval: 200
@@ -68,3 +68,4 @@ val_data_path: prompts/vidprom_filtered_extended.txt
 min_num_training_frames: 21
 num_training_frames: 21
 slice_last_frames: 21
+keep_last_n: 5

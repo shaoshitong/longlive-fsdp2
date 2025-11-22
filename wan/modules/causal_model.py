@@ -321,6 +321,7 @@ class CausalWanAttentionBlock(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
         num_frames, frame_seqlen = e.shape[1], x.shape[1] // e.shape[1]
+        print("DEBUG 324", num_frames, frame_seqlen)
         e = (self.modulation.unsqueeze(1) + e).chunk(6, dim=2)
 
         y = self.self_attn(
@@ -657,12 +658,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         assert seq_lens.max() <= seq_len
         x = torch.cat(x)
-
         e = self.time_embedding(
             sinusoidal_embedding_1d(self.freq_dim, t.flatten()).type_as(x))
         e0 = self.time_projection(e).unflatten(
             1, (6, self.dim)).unflatten(dim=0, sizes=t.shape)
-
         context_lens = None
         context = self.text_embedding(
             torch.stack([
@@ -790,6 +789,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 current_start=current_start,
                 cache_start=cache_start
         """
+        print(noisy_image_or_video.shape,"DEBUG noisy_image_or_video.shape")
         flow_pred = self._forward_inference(
             noisy_image_or_video,
             t=t, context=context,

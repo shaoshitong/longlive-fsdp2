@@ -31,9 +31,9 @@ def main():
 转换示例:
 
 1. 推理专用（推荐）:
-   python convert_checkpoint.py \\
-       --dcp_path ./checkpoints/step_000012 \\
-       --output ./model_inference.pth \\
+   python utils/convert_checkpoint.py \
+       --dcp_path /share/st_workspace/LongLive-FSDP2/logs_fsdp2_ema/step_000680 \
+       --output /share/st_workspace/LongLive-FSDP2/logs_fsdp2_ema/step_000680.pth \
        --model_only
 
 2. 完整checkpoint:

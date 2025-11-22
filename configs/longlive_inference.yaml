@@ -5,32 +5,33 @@ denoising_step_list:
 - 250
 warp_denoising_step: true # need to remove - 0 in denoising_step_list if warp_denoising_step is true
 num_frame_per_block: 3
-model_name: Wan2.1-T2V-1.3B
+model_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
 model_kwargs:
   local_attn_size: 12
   timestep_shift: 5.0
   sink_size: 3
+  model_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
 
 
 # inference
-data_path: longlive_models/prompts/vidprom_filtered_extended.txt
-output_folder: videos/long
+data_path: /share/st_workspace/LongLive/prompts/all_long_prompts.txt
+output_folder: videos/long_ema
 inference_iter: -1
 num_output_frames: 120
-use_ema: false
+use_ema: true
 seed: 0
 num_samples: 1
 save_with_index: true
 global_sink: true
 context_noise: 0
 
-generator_ckpt: longlive_models/models/longlive_base.pt
-lora_ckpt: longlive_models/models/lora.pt
+generator_ckpt: /share/st_workspace/LongLive-FSDP2/logs_fsdp2_ema/step_000690_ema.pth
+# lora_ckpt: longlive_models/models/lora.pt
 
-adapter:
-  type: "lora"
-  rank: 256                    # LoRA rank (typical values: 8, 16, 32, 64)
-  alpha: 256                   # LoRA alpha (typically same as rank, but can be different)
-  dropout: 0.0                # LoRA dropout rate
-  dtype: "bfloat16"          # Data type for LoRA parameters: "bfloat16", "float16", "float32"
-  verbose: false              # Whether to print all target module names
+# adapter:
+#   type: "lora"
+#   rank: 256                    # LoRA rank (typical values: 8, 16, 32, 64)
+#   alpha: 256                   # LoRA alpha (typically same as rank, but can be different)
+#   dropout: 0.0                # LoRA dropout rate
+#   dtype: "bfloat16"          # Data type for LoRA parameters: "bfloat16", "float16", "float32"
+#   verbose: false              # Whether to print all target module names

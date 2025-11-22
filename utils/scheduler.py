@@ -41,8 +41,12 @@ class SchedulerInterface(ABC):
             lambda x: x.double().to(x0.device), [x0, xt,
                                                  self.alphas_cumprod]
         )
-
-        alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        if x0.ndim == 4:
+            alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        elif x0.ndim == 2:
+            alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1)
+        else:
+            raise ValueError(f"Unsupported dimension: {x0.ndim}")
         beta_prod_t = 1 - alpha_prod_t
 
         noise_pred = (xt - alpha_prod_t **
@@ -67,7 +71,12 @@ class SchedulerInterface(ABC):
             lambda x: x.double().to(noise.device), [noise, xt,
                                                     self.alphas_cumprod]
         )
-        alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        if noise.ndim == 4:
+            alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        elif noise.ndim == 2:
+            alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1)
+        else:
+            raise ValueError(f"Unsupported dimension: {noise.ndim}")
         beta_prod_t = 1 - alpha_prod_t
 
         x0_pred = (xt - beta_prod_t **
@@ -96,7 +105,12 @@ class SchedulerInterface(ABC):
             lambda x: x.double().to(velocity.device), [velocity, xt,
                                                        self.alphas_cumprod]
         )
-        alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        if velocity.ndim == 4:
+            alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        elif velocity.ndim == 2:
+            alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1)
+        else:
+            raise ValueError(f"Unsupported dimension: {velocity.ndim}")
         beta_prod_t = 1 - alpha_prod_t
 
         x0_pred = (alpha_prod_t ** 0.5) * xt - (beta_prod_t ** 0.5) * velocity
@@ -147,12 +161,22 @@ class FlowMatchScheduler():
         self.timesteps = self.timesteps.to(model_output.device)
         timestep_id = torch.argmin(
             (self.timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        if model_output.ndim == 4:
+            sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        elif model_output.ndim == 2:
+            sigma = self.sigmas[timestep_id].reshape(-1, 1)
+        else:
+            raise ValueError(f"Unsupported dimension: {model_output.ndim}")
         if to_final or (timestep_id + 1 >= len(self.timesteps)).any():
             sigma_ = 1 if (
                 self.inverse_timesteps or self.reverse_sigmas) else 0
         else:
-            sigma_ = self.sigmas[timestep_id + 1].reshape(-1, 1, 1, 1)
+            if model_output.ndim == 4:
+                sigma_ = self.sigmas[timestep_id + 1].reshape(-1, 1, 1, 1)
+            elif model_output.ndim == 2:
+                sigma_ = self.sigmas[timestep_id + 1].reshape(-1, 1)
+            else:
+                raise ValueError(f"Unsupported dimension: {model_output.ndim}")
         prev_sample = sample + model_output * (sigma_ - sigma)
         return prev_sample
 
@@ -171,7 +195,12 @@ class FlowMatchScheduler():
         self.timesteps = self.timesteps.to(noise.device)
         timestep_id = torch.argmin(
             (self.timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        if original_samples.ndim == 4:
+            sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        elif original_samples.ndim == 2:
+            sigma = self.sigmas[timestep_id].reshape(-1, 1)
+        else:
+            raise ValueError(f"Unsupported dimension: {original_samples.ndim}")
         sample = (1 - sigma) * original_samples + sigma * noise
         return sample.type_as(noise)
 

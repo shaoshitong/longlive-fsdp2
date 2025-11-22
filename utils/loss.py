@@ -49,7 +49,12 @@ class VPredLoss(DenoisingLoss):
         gradient_mask: torch.Tensor = None,
         **kwargs
     ) -> torch.Tensor:
-        weights = 1 / (1 - alphas_cumprod[timestep].reshape(*timestep.shape, 1, 1, 1))
+        if x_pred.ndim == 4:
+            weights = 1 / (1 - alphas_cumprod[timestep].reshape(*timestep.shape, 1, 1, 1))
+        elif x_pred.ndim == 5:
+            weights = 1 / (1 - alphas_cumprod[timestep].reshape(*timestep.shape, 1))
+        else:
+            raise ValueError(f"Unsupported dimension: {x_pred.ndim}")
         err = weights * (x - x_pred) ** 2
         if gradient_mask is not None:
             return err[gradient_mask].mean()

@@ -2,7 +2,7 @@
 
 # Project path and config
 CONFIG=configs/longlive_train_long.yaml
-LOGDIR=logs_v2
+LOGDIR=logs_fsdp2_v2
 WANDB_SAVE_DIR=wandb
 echo "CONFIG="$CONFIG
 

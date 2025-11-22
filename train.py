@@ -5,7 +5,7 @@ import os
 from omegaconf import OmegaConf
 import wandb
 
-from trainer import ScoreDistillationTrainer
+from trainer import ScoreDistillationTrainer, ScoreDistillationOviTrainer
 
 
 def main():
@@ -39,6 +39,8 @@ def main():
 
     if config.trainer == "score_distillation":
         trainer = ScoreDistillationTrainer(config)
+    elif config.trainer == "score_distillation_ovi":
+        trainer = ScoreDistillationOviTrainer(config)
     trainer.train()
 
     wandb.finish()

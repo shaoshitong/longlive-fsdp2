@@ -1,10 +1,9 @@
-generator_ckpt: checkpoints/longlive_init.pt
+generator_ckpt: /share/st_workspace/LongLive-FSDP2/logs_fsdp2/step_000700.pth
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size
 fake_score_fsdp_wrap_strategy: size
-real_name: Wan2.1-T2V-1.3B
-# real_name: Wan2.1-T2V-14B
-fake_name: Wan2.1-T2V-1.3B
+real_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
+fake_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
 text_encoder_fsdp_wrap_strategy: size
 denoising_step_list:
 - 1000
@@ -19,9 +18,9 @@ guidance_scale: 3.0
 denoising_loss_type: flow
 mixed_precision: true
 seed: 0
-wandb_key: YOUR_WANDB_KEY
-wandb_entity: YOUR_WANDB_ENTITY
-wandb_project: YOUR_WANDB_PROJECT
+wandb_key: eedb247029757d557d7fc466e3d339d428ba411a
+wandb_entity: shaoshitong
+wandb_project: long-video-v2
 sharding_strategy: hybrid_full
 lr: 1.0e-05
 lr_critic: 2.0e-06
@@ -39,7 +38,7 @@ total_batch_size: 64
 log_iters: 50
 max_checkpoints: 3
 max_iters: 3000
-
+logdir: /share/st_workspace/LongLive/logs_v2
 negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
 dfake_gen_update_ratio: 5
 image_or_video_shape:
@@ -58,6 +57,7 @@ model_kwargs:
   timestep_shift: 5.0
   local_attn_size: 12
   sink_size: 3
+  model_name: /home/fi-user/.cache/huggingface/hub/models--Wan-AI--Wan2.1-T2V-1.3B/snapshots/37ec512624d61f7aa208f7ea8140a131f93afc9a
 
 # Visualization
 vis_interval: 500
@@ -102,3 +102,5 @@ adapter:
   dtype: "bfloat16"          # Data type for LoRA parameters: "bfloat16", "float16", "float32"
   apply_to_critic: true       # Whether to apply LoRA to critic/fake_score model
   verbose: true              # Whether to print all target module names
+
+keep_last_n: 5

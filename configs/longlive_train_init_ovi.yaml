@@ -1,0 +1,82 @@
+generator_ckpt: /share/st_workspace/Ovi/ckpts/Ovi/model_960x960_10s.safetensors
+generator_fsdp_wrap_strategy: size
+real_score_fsdp_wrap_strategy: size
+fake_score_fsdp_wrap_strategy: size
+real_name: /share/st_workspace/Ovi/ckpts/Wan2.2-TI2V-5B
+fake_name: /share/st_workspace/Ovi/ckpts/Wan2.2-TI2V-5B
+text_encoder_fsdp_wrap_strategy: size
+denoising_step_list:
+- 1000
+- 750
+- 500
+- 250
+warp_denoising_step: true # need to remove - 0 in denoising_step_list if warp_denoising_step is true
+ts_schedule: false
+num_train_timestep: 1000
+timestep_shift: 5.0
+real_audio_guidance_scale: 2.0
+real_video_guidance_scale: 3.0
+fake_guidance_scale: 0.0
+denoising_loss_type: flow
+mixed_precision: true
+seed: 0
+wandb_key: eedb247029757d557d7fc466e3d339d428ba411a
+wandb_entity: shaoshitong
+wandb_project: long-video-v1
+sharding_strategy: hybrid_full
+lr: 2.0e-06
+lr_critic: 4.0e-07
+beta1: 0.0
+beta2: 0.999
+beta1_critic: 0.0
+beta2_critic: 0.999
+data_path: /share/st_workspace/LongLive-FSDP2/prompts/merged_prompts.txt
+batch_size: 1
+gradient_accumulation_steps: 4
+ema_weight: 0.99
+ema_start_step: 200
+total_batch_size: 64
+log_iters: 10
+max_checkpoints: 5
+max_iters: 700
+
+video_negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+audio_negative_prompt: ''
+dfake_gen_update_ratio: 5
+image_or_video_shape:
+- 1
+- 9 # unused in sequential training
+- 48
+- 60
+- 60
+audio_shape:
+- 1
+- 45 # unused in sequential training
+- 20
+distribution_loss: dmd_ovi
+trainer: score_distillation_ovi
+gradient_checkpointing: true
+num_frame_per_block: 3
+load_raw_video: false
+model_kwargs:
+  timestep_shift: 5.0
+  local_attn_size: 12
+  sink_size: 3
+  model_name: /share/st_workspace/Ovi/ckpts/Wan2.2-TI2V-5B
+
+# Visualization
+vis_interval: 200
+vis_ema: false
+vis_video_lengths:
+- 9
+val_batch_size: 1
+val_data_path: /share/st_workspace/LongLive-FSDP2/prompts/merged_prompts.txt
+
+min_num_training_frames: 9
+num_training_frames: 9
+slice_last_frames: 9
+keep_last_n: 5
+video_generator_loss_weight: 1.0
+audio_generator_loss_weight: 1.0
+video_critic_loss_weight: 1.0
+audio_critic_loss_weight: 1.0

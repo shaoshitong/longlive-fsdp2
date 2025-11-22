@@ -28,15 +28,19 @@ class LoRALayer(nn.Linear):  # Inherit directly from nn.Linear
 
 def replace_linear_with_lora(module, rank=16, alpha=1., tag=0, weak_lora_alpha=0.1):
     for name, child in module.named_children():
-        if name == "blocks":
+        if name == "single_fusion_blocks":
             tag = tag + 1
         if isinstance(child, nn.Linear) and tag >= 1:
-            # Create new LoRALayer with same dimensions
-            new_layer = LoRALayer(child.in_features, child.out_features, rank, alpha, weak_lora_alpha=weak_lora_alpha)
-            # Copy original weights and bias to preserve keys
-            new_layer.weight.data.copy_(child.weight.data)
-            if child.bias is not None:
-                new_layer.bias.data.copy_(child.bias.data)
+            param_device = getattr(child.weight, "device", None)
+            use_meta = param_device is not None and param_device.type == "meta"
+            if use_meta:
+                with torch.device("meta"):
+                    new_layer = LoRALayer(child.in_features, child.out_features, rank, alpha, weak_lora_alpha=weak_lora_alpha)
+            else:
+                new_layer = LoRALayer(child.in_features, child.out_features, rank, alpha, weak_lora_alpha=weak_lora_alpha)
+                new_layer.weight.data.copy_(child.weight.data)
+                if child.bias is not None and new_layer.bias is not None:
+                    new_layer.bias.data.copy_(child.bias.data)
             setattr(module, name, new_layer)
         else:
             replace_linear_with_lora(child, rank, alpha, tag, weak_lora_alpha=weak_lora_alpha)

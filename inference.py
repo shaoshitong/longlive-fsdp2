@@ -72,8 +72,13 @@ pipeline = CausalInferencePipeline(config, device=device)
 # Load generator checkpoint
 if config.generator_ckpt:
     state_dict = torch.load(config.generator_ckpt, map_location="cpu")
-    if "generator" in state_dict or "generator_ema" in state_dict:
-        raw_gen_state_dict = state_dict["generator_ema" if config.use_ema else "generator"]
+    if "generator" in state_dict or "ema" in state_dict:
+        raw_gen_state_dict = state_dict["ema" if config.use_ema else "generator"]
+        if config.use_ema:
+            raw_gen_state_dict = raw_gen_state_dict["ema_params"]
+            for k, v in raw_gen_state_dict.items():
+                if v.numel() == 0:
+                    print(f"Parameter {k} is empty")
     elif "model" in state_dict:
         raw_gen_state_dict = state_dict["model"]
     else:
